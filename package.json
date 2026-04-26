@@ -1,0 +1,44 @@
+{
+  "name": "self-managing-system",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "deploy": "npm run build && wrangler deploy",
+    "cf-typegen": "wrangler types",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate:local": "wrangler d1 migrations apply self-managing-system --local",
+    "db:migrate:remote": "wrangler d1 migrations apply self-managing-system --remote",
+    "db:seed:local": "wrangler d1 execute self-managing-system --local --file=./migrations/seed.sql",
+    "db:seed:remote": "wrangler d1 execute self-managing-system --remote --file=./migrations/seed.sql"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.59.0",
+    "clsx": "^2.1.1",
+    "date-fns": "^4.1.0",
+    "drizzle-orm": "^0.36.4",
+    "hono": "^4.6.14",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.28.0",
+    "recharts": "^2.13.3",
+    "tailwind-merge": "^2.5.5"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.0.0",
+    "@cloudflare/workers-types": "^4.20241218.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "drizzle-kit": "^0.28.1",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.16",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.3",
+    "wrangler": "^3.95.0"
+  }
+}

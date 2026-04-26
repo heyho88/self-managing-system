@@ -13,7 +13,7 @@
     {
       "binding": "DB",
       "database_name": "self-managing-system",
-      "database_id": "PLACEHOLDER_REPLACE_AFTER_CREATE",
+      "database_id": "d53c3e3c-81d6-4be2-9df7-eb8deeaed1f8",
       "migrations_dir": "migrations"
     }
   ],

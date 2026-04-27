@@ -2,22 +2,32 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "self-managing-system",
   "main": "src/worker/index.ts",
-  "compatibility_date": "2025-04-01",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_date": "2024-12-18",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
   "assets": {
-    "directory": "./dist/client",
+    "directory": "./dist",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application"
   },
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "self-managing-system",
-      "database_id": "d53c3e3c-81d6-4be2-9df7-eb8deeaed1f8",
+      "database_name": "self_managing_system",
+      "database_id": "a960a559-7d2b-4772-a748-055b2ecf107c",
       "migrations_dir": "migrations"
     }
   ],
-  "observability": {
-    "enabled": true
+  "vars": {
+    "ENVIRONMENT": "production",
+    "ACCESS_TEAM_DOMAIN": "<team>.cloudflareaccess.com",
+    "ACCESS_AUD": "<aud-tag>"
+  },
+  "triggers": {
+    // KST 토요일 자정 (= 일요일 00:00 KST = 토요일 15:00 UTC)에 기본 템플릿의 수동(고정) 블록을 다음 주에 자동 삽입.
+    "crons": [
+      "0 15 * * 6"
+    ]
   }
 }

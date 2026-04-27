@@ -1,422 +1,272 @@
-import { useState, useMemo } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { api, type Todo, type Transaction, type Budget, type Category, type TimeBlock } from '../lib/api';
-import { todayKey, monthKey, formatKRW, minutesToTime, timeToMinutes } from '../lib/utils';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import { PageHeader } from '@/components/PageHeader';
+import { TimeGrid } from '@/components/TimeGrid';
+import { EventInspector } from '@/components/EventInspector';
+import { TodayCenter } from '@/components/TodayCenter';
+import { TodaySidebar } from '@/components/TodaySidebar';
+import { ResizeHandle } from '@/components/ResizeHandle';
+import { useCategories, useEvents, useNowHHMM, useNowMin } from '@/lib/hooks';
+import { apiClient } from '@/lib/api';
+import { addDays, formatDateLong, todayISO } from '@/lib/utils';
+import {
+  getEventClip,
+  hasTextSelection,
+  isTypingTarget,
+  setEventClip,
+} from '@/lib/eventClipboard';
+import { DAY_END_MIN, DAY_START_MIN, SLOT_MIN } from '@/lib/timeGrid';
+
+const LS_KEY = 'todayLayoutWidths';
+const MIN_LEFT = 320;
+const MIN_MIDDLE = 200;
+const MIN_RIGHT = 180;
+const DEFAULT_MIDDLE = 320;
+const DEFAULT_RIGHT = 260;
 
 export function TodayPage() {
-  const date = todayKey();
-  const month = monthKey();
-  const qc = useQueryClient();
+  const today = todayISO();
+  const [params, setParams] = useSearchParams();
+  const date = params.get('d') && /^\d{4}-\d{2}-\d{2}$/.test(params.get('d')!) ? params.get('d')! : today;
+  const events = useEvents(date);
+  const eventCategories = useCategories('event');
+  const nowMin = useNowMin();
+  const nowText = useNowHHMM();
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  const todos = useQuery({
-    queryKey: ['todos', date],
-    queryFn: () => api.get<Todo[]>(`/api/todos?date=${date}`),
-  });
-  const txs = useQuery({
-    queryKey: ['transactions', month],
-    queryFn: () => api.get<Transaction[]>(`/api/transactions?month=${month}`),
-  });
-  const budgets = useQuery({
-    queryKey: ['budgets', month],
-    queryFn: () => api.get<Budget[]>(`/api/budgets?month=${month}`),
-  });
-  const cats = useQuery({
-    queryKey: ['categories'],
-    queryFn: () => api.get<Category[]>('/api/categories'),
-  });
-  const blocks = useQuery({
-    queryKey: ['time-blocks', date],
-    queryFn: () => api.get<TimeBlock[]>(`/api/time-blocks?date=${date}`),
-  });
+  const categoryColor = useMemo(() => {
+    const map = new Map(eventCategories.map((c) => [c.id, c.color ?? '#8a8a85']));
+    return (id: string | null) => (id ? map.get(id) ?? '#8a8a85' : '#8a8a85');
+  }, [eventCategories]);
 
-  const totalBudget = useMemo(
-    () => budgets.data?.find((b) => b.categoryId === null)?.amount ?? 0,
-    [budgets.data],
-  );
-  const monthSpent = useMemo(
-    () =>
-      (txs.data ?? [])
-        .filter((t) => t.type === 'expense')
-        .reduce((s, t) => s + t.amount, 0),
-    [txs.data],
-  );
-  const todaySpent = useMemo(
-    () =>
-      (txs.data ?? [])
-        .filter((t) => t.type === 'expense' && t.date === date)
-        .reduce((s, t) => s + t.amount, 0),
-    [txs.data, date],
-  );
+  const selected = selectedId ? events.events.find((e) => e.id === selectedId) ?? null : null;
+
+  // ── 리사이즈 가능한 가운데/우측 컬럼 폭. 좌측(TimeGrid)은 flex-1로 나머지 차지.
+  const rowRef = useRef<HTMLDivElement | null>(null);
+  const [middleW, setMiddleW] = useState(DEFAULT_MIDDLE);
+  const [rightW, setRightW] = useState(DEFAULT_RIGHT);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(LS_KEY);
+      if (!raw) return;
+      const v = JSON.parse(raw);
+      if (typeof v?.middle === 'number') setMiddleW(v.middle);
+      if (typeof v?.right === 'number') setRightW(v.right);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LS_KEY, JSON.stringify({ middle: middleW, right: rightW }));
+    } catch {
+      // ignore
+    }
+  }, [middleW, rightW]);
+
+  function clampLayout(nextMiddle: number, nextRight: number): { m: number; r: number } {
+    const total = rowRef.current?.clientWidth ?? 1200;
+    const r = Math.max(MIN_RIGHT, nextRight);
+    const maxM = Math.max(MIN_MIDDLE, total - MIN_LEFT - r - 4); // 좌측 최소폭 + 우측 + 핸들 폭
+    const m = Math.max(MIN_MIDDLE, Math.min(nextMiddle, maxM));
+    return { m, r };
+  }
+
+  function setDate(iso: string | null) {
+    setSelectedId(null);
+    if (iso == null || iso === today) {
+      const next = new URLSearchParams(params);
+      next.delete('d');
+      setParams(next);
+    } else {
+      setParams({ d: iso });
+    }
+  }
+
+  // 새로 만들거나 옮긴 일정이 우선 — 같은 날짜에서 겹치는 기존 일정을 제거.
+  async function evictOverlapping(startMin: number, endMin: number, excludeId?: string) {
+    const overlapping = events.events.filter(
+      (e) => e.id !== excludeId && e.start_min < endMin && e.end_min > startMin
+    );
+    if (overlapping.length === 0) return;
+    await Promise.all(overlapping.map((e) => events.remove(e.id)));
+  }
+
+  // ── 복사·붙여넣기 (Ctrl/Cmd + C / V)
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      if (e.shiftKey || e.altKey) return;
+      if (isTypingTarget(e.target)) return;
+      const k = e.key.toLowerCase();
+      if (k === 'c') {
+        if (hasTextSelection()) return;
+        if (!selected) return;
+        e.preventDefault();
+        setEventClip({
+          title: selected.title,
+          category: selected.category,
+          notes: selected.notes,
+          duration_min: selected.end_min - selected.start_min,
+        });
+      } else if (k === 'v') {
+        const clip = getEventClip();
+        if (!clip) return;
+        e.preventDefault();
+        void pasteClip(clip);
+      }
+    }
+    async function pasteClip(clip: NonNullable<ReturnType<typeof getEventClip>>) {
+      const dur = clip.duration_min;
+      // 시작 위치 결정: 선택된 일정이 있으면 그 끝, 아니면 오늘이면 현재 시각, 아니면 09:00
+      let start: number;
+      if (selected) {
+        start = selected.end_min;
+      } else if (date === today) {
+        start = Math.round(nowMin / SLOT_MIN) * SLOT_MIN;
+      } else {
+        start = 9 * 60;
+      }
+      // 하루 범위로 클램프
+      if (start + dur > DAY_END_MIN) start = Math.max(DAY_START_MIN, DAY_END_MIN - dur);
+      if (start < DAY_START_MIN) start = DAY_START_MIN;
+      const end = Math.min(DAY_END_MIN, start + dur);
+      await evictOverlapping(start, end);
+      const ev = await events.create({
+        date,
+        start_min: start,
+        end_min: end,
+        title: clip.title,
+        category: clip.category,
+        notes: clip.notes,
+      });
+      setSelectedId(ev.id);
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [selected, date, today, nowMin, events]);
 
   return (
-    <div className="space-y-4">
-      <Greeting />
-      <BudgetCard totalBudget={totalBudget} monthSpent={monthSpent} todaySpent={todaySpent} month={month} />
-      <TodosCard todos={todos.data ?? []} date={date} onChange={() => qc.invalidateQueries({ queryKey: ['todos', date] })} />
-      <QuickExpenseCard
-        categories={cats.data ?? []}
-        date={date}
-        onAdded={() => {
-          qc.invalidateQueries({ queryKey: ['transactions'] });
-        }}
-      />
-      <TimeBlocksCard blocks={blocks.data ?? []} date={date} onChange={() => qc.invalidateQueries({ queryKey: ['time-blocks', date] })} />
-    </div>
-  );
-}
-
-function Greeting() {
-  const d = new Date();
-  const dow = ['일', '월', '화', '수', '목', '금', '토'][d.getDay()];
-  return (
-    <div>
-      <div className="text-2xl font-semibold tracking-tight">
-        {d.getMonth() + 1}월 {d.getDate()}일 ({dow})
-      </div>
-      <div className="text-sm text-neutral-500">오늘도 한 발짝.</div>
-    </div>
-  );
-}
-
-function BudgetCard({
-  totalBudget,
-  monthSpent,
-  todaySpent,
-  month,
-}: {
-  totalBudget: number;
-  monthSpent: number;
-  todaySpent: number;
-  month: string;
-}) {
-  const qc = useQueryClient();
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(String(totalBudget));
-  const pct = totalBudget > 0 ? Math.min(100, Math.round((monthSpent / totalBudget) * 100)) : 0;
-  const over = totalBudget > 0 && monthSpent > totalBudget;
-
-  const save = useMutation({
-    mutationFn: (amount: number) => api.put('/api/budgets', { month, categoryId: null, amount }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['budgets', month] });
-      setEditing(false);
-    },
-  });
-
-  return (
-    <div className="card">
-      <div className="flex items-baseline justify-between">
-        <div className="text-sm text-neutral-400">이번 달 지출</div>
-        <button
-          className="text-xs text-neutral-500 hover:text-neutral-300"
-          onClick={() => {
-            setDraft(String(totalBudget));
-            setEditing((v) => !v);
-          }}
-        >
-          예산 설정
-        </button>
-      </div>
-      <div className="mt-1 flex items-baseline gap-2">
-        <div className="text-2xl font-semibold">{formatKRW(monthSpent)}</div>
-        {totalBudget > 0 && (
-          <div className={`text-sm ${over ? 'text-red-400' : 'text-neutral-500'}`}>
-            / {formatKRW(totalBudget)} ({pct}%)
+    <div className="h-full flex flex-col">
+      <PageHeader
+        title="오늘"
+        subtitle={
+          <span className="flex items-baseline gap-2">
+            <span>{formatDateLong(date)}</span>
+            {date === today && (
+              <span className="text-xs tabular-nums" style={{ color: '#d44c47' }}>
+                ● {nowText}
+              </span>
+            )}
+          </span>
+        }
+        right={
+          <div className="flex items-center gap-2">
+            <button className="text-sub hover:text-ink px-1" onClick={() => setDate(addDays(date, -1))}>
+              〈
+            </button>
+            {date !== today && (
+              <button
+                className="text-sm border border-line px-2 py-0.5 hover:bg-hover"
+                onClick={() => setDate(today)}
+              >
+                오늘
+              </button>
+            )}
+            <button className="text-sub hover:text-ink px-1" onClick={() => setDate(addDays(date, 1))}>
+              〉
+            </button>
+            {events.error ? (
+              <span className="text-xs text-cat-red">오류: {events.error}</span>
+            ) : events.loading ? (
+              <span className="text-xs text-sub">로딩…</span>
+            ) : (
+              <span className="text-xs text-sub ml-2">{events.events.length}개 일정</span>
+            )}
           </div>
-        )}
-      </div>
-      <div className="mt-1 text-xs text-neutral-500">오늘 지출 {formatKRW(todaySpent)}</div>
-      {totalBudget > 0 && (
-        <div className="mt-3 h-2 overflow-hidden rounded-full bg-neutral-800">
-          <div
-            className={`h-full ${over ? 'bg-red-500' : 'bg-emerald-500'}`}
-            style={{ width: `${pct}%` }}
+        }
+      />
+      <div ref={rowRef} className="flex-1 flex min-h-0 min-w-0">
+        <section className="flex-1 min-h-0 min-w-0">
+          <TimeGrid
+            events={events.events}
+            categoryColor={categoryColor}
+            isToday={date === today}
+            nowMin={nowMin}
+            selectedId={selectedId}
+            onSelect={setSelectedId}
+            categories={eventCategories}
+            onCreate={async (range, title, categoryId) => {
+              await evictOverlapping(range.startMin, range.endMin);
+              const ev = await events.create({
+                date,
+                start_min: range.startMin,
+                end_min: range.endMin,
+                title,
+                category: categoryId,
+              });
+              setSelectedId(ev.id);
+            }}
+            onDropTask={async (range, taskId, taskTitle) => {
+              await evictOverlapping(range.startMin, range.endMin);
+              const ev = await events.create({
+                date,
+                start_min: range.startMin,
+                end_min: range.endMin,
+                title: taskTitle,
+              });
+              await apiClient.updateTask(taskId, { scheduled_date: date }).catch(() => {});
+              setSelectedId(ev.id);
+            }}
+            onMove={async (id, range) => {
+              await evictOverlapping(range.startMin, range.endMin, id);
+              await events.update(id, { start_min: range.startMin, end_min: range.endMin });
+            }}
           />
-        </div>
-      )}
-      {editing && (
-        <div className="mt-3 flex gap-2">
-          <input
-            className="input"
-            type="number"
-            inputMode="numeric"
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            placeholder="월 예산 (원)"
-          />
-          <button className="btn-primary" onClick={() => save.mutate(Number(draft) || 0)}>
-            저장
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
+        </section>
 
-function TodosCard({ todos, date, onChange }: { todos: Todo[]; date: string; onChange: () => void }) {
-  const [title, setTitle] = useState('');
-  const [priority, setPriority] = useState(0);
-
-  const add = useMutation({
-    mutationFn: (t: { title: string; priority: number; dueDate: string }) => api.post<Todo>('/api/todos', t),
-    onSuccess: () => {
-      setTitle('');
-      onChange();
-    },
-  });
-  const toggle = useMutation({
-    mutationFn: (t: Todo) => api.patch(`/api/todos/${t.id}`, { done: !t.done }),
-    onSuccess: onChange,
-  });
-  const remove = useMutation({
-    mutationFn: (id: number) => api.del(`/api/todos/${id}`),
-    onSuccess: onChange,
-  });
-
-  return (
-    <div className="card">
-      <div className="mb-2 flex items-center justify-between">
-        <div className="text-sm font-medium text-neutral-300">오늘 할 일</div>
-        <div className="text-xs text-neutral-500">
-          {todos.filter((t) => t.done).length} / {todos.length}
-        </div>
-      </div>
-      <form
-        className="flex gap-2"
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (!title.trim()) return;
-          add.mutate({ title: title.trim(), priority, dueDate: date });
-        }}
-      >
-        <input
-          className="input"
-          placeholder="할 일 추가..."
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
+        <ResizeHandle
+          onDrag={(dx) => {
+            const next = clampLayout(middleW - dx, rightW);
+            setMiddleW(next.m);
+            setRightW(next.r);
+          }}
         />
-        <button
-          type="button"
-          className={`btn-ghost ${priority === 1 ? 'text-amber-400' : ''}`}
-          onClick={() => setPriority((p) => (p === 1 ? 0 : 1))}
-          title="중요"
+
+        <section
+          className="border-l border-line flex flex-col min-h-0 min-w-0"
+          style={{ width: middleW }}
         >
-          ★
-        </button>
-        <button className="btn-primary" type="submit">
-          추가
-        </button>
-      </form>
-      <ul className="mt-3 space-y-1">
-        {todos.map((t) => (
-          <li
-            key={t.id}
-            className="group flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-neutral-900"
-          >
-            <button
-              className={`h-5 w-5 shrink-0 rounded-md border ${
-                t.done ? 'border-emerald-500 bg-emerald-500' : 'border-neutral-700'
-              }`}
-              onClick={() => toggle.mutate(t)}
-              aria-label="toggle"
-            >
-              {t.done && <span className="block text-center text-xs leading-5 text-black">✓</span>}
-            </button>
-            <span className={`flex-1 text-sm ${t.done ? 'text-neutral-600 line-through' : ''}`}>
-              {t.priority === 1 && <span className="mr-1 text-amber-400">★</span>}
-              {t.title}
-            </span>
-            <button
-              className="text-xs text-neutral-600 opacity-0 transition group-hover:opacity-100"
-              onClick={() => remove.mutate(t.id)}
-            >
-              삭제
-            </button>
-          </li>
-        ))}
-        {todos.length === 0 && <li className="py-4 text-center text-xs text-neutral-600">할 일을 추가해보세요</li>}
-      </ul>
-    </div>
-  );
-}
-
-function QuickExpenseCard({
-  categories,
-  date,
-  onAdded,
-}: {
-  categories: Category[];
-  date: string;
-  onAdded: () => void;
-}) {
-  const [amount, setAmount] = useState('');
-  const [memo, setMemo] = useState('');
-  const [type, setType] = useState<'expense' | 'income'>('expense');
-  const filtered = categories.filter((c) => c.type === type);
-  const [categoryId, setCategoryId] = useState<number | ''>('');
-
-  const add = useMutation({
-    mutationFn: () =>
-      api.post('/api/transactions', {
-        amount: Number(amount.replace(/,/g, '')) || 0,
-        type,
-        categoryId: categoryId || null,
-        memo: memo || null,
-        date,
-      }),
-    onSuccess: () => {
-      setAmount('');
-      setMemo('');
-      onAdded();
-    },
-  });
-
-  return (
-    <div className="card">
-      <div className="mb-2 flex items-center justify-between">
-        <div className="text-sm font-medium text-neutral-300">빠른 지출 입력</div>
-        <div className="flex overflow-hidden rounded-md border border-neutral-800">
-          {(['expense', 'income'] as const).map((v) => (
-            <button
-              key={v}
-              className={`px-2 py-0.5 text-xs ${
-                type === v ? 'bg-neutral-100 text-black' : 'text-neutral-400'
-              }`}
-              onClick={() => {
-                setType(v);
-                setCategoryId('');
+          {selected ? (
+            <EventInspector
+              event={selected}
+              categories={eventCategories}
+              onUpdate={(patch) => events.update(selected.id, patch)}
+              onDelete={async () => {
+                await events.remove(selected.id);
+                setSelectedId(null);
               }}
-            >
-              {v === 'expense' ? '지출' : '수입'}
-            </button>
-          ))}
-        </div>
-      </div>
-      <form
-        className="space-y-2"
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (!amount) return;
-          add.mutate();
-        }}
-      >
-        <div className="flex gap-2">
-          <input
-            className="input"
-            inputMode="numeric"
-            placeholder="금액"
-            value={amount}
-            onChange={(e) => setAmount(e.target.value.replace(/[^\d]/g, ''))}
-          />
-          <select
-            className="input max-w-[140px]"
-            value={categoryId}
-            onChange={(e) => setCategoryId(e.target.value ? Number(e.target.value) : '')}
-          >
-            <option value="">카테고리</option>
-            {filtered.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.icon ? `${c.icon} ` : ''}
-                {c.name}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="flex gap-2">
-          <input
-            className="input"
-            placeholder="메모 (선택)"
-            value={memo}
-            onChange={(e) => setMemo(e.target.value)}
-          />
-          <button className="btn-primary shrink-0" type="submit">
-            추가
-          </button>
-        </div>
-      </form>
-    </div>
-  );
-}
-
-function TimeBlocksCard({
-  blocks,
-  date,
-  onChange,
-}: {
-  blocks: TimeBlock[];
-  date: string;
-  onChange: () => void;
-}) {
-  const [start, setStart] = useState('09:00');
-  const [end, setEnd] = useState('10:00');
-  const [title, setTitle] = useState('');
-
-  const add = useMutation({
-    mutationFn: () =>
-      api.post('/api/time-blocks', {
-        date,
-        startMinute: timeToMinutes(start),
-        endMinute: timeToMinutes(end),
-        title,
-      }),
-    onSuccess: () => {
-      setTitle('');
-      onChange();
-    },
-  });
-  const toggle = useMutation({
-    mutationFn: (b: TimeBlock) => api.patch(`/api/time-blocks/${b.id}`, { done: !b.done }),
-    onSuccess: onChange,
-  });
-  const remove = useMutation({
-    mutationFn: (id: number) => api.del(`/api/time-blocks/${id}`),
-    onSuccess: onChange,
-  });
-
-  return (
-    <div className="card">
-      <div className="mb-2 text-sm font-medium text-neutral-300">시간 블록</div>
-      <form
-        className="flex gap-2"
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (!title.trim()) return;
-          add.mutate();
-        }}
-      >
-        <input className="input max-w-[90px]" type="time" value={start} onChange={(e) => setStart(e.target.value)} />
-        <input className="input max-w-[90px]" type="time" value={end} onChange={(e) => setEnd(e.target.value)} />
-        <input className="input" placeholder="무엇을?" value={title} onChange={(e) => setTitle(e.target.value)} />
-        <button className="btn-primary shrink-0">추가</button>
-      </form>
-      <ul className="mt-3 space-y-1">
-        {blocks.map((b) => (
-          <li
-            key={b.id}
-            className="group flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-neutral-900"
-          >
-            <span className="w-[110px] shrink-0 text-xs text-neutral-500">
-              {minutesToTime(b.startMinute)} – {minutesToTime(b.endMinute)}
-            </span>
-            <button
-              className={`h-4 w-4 shrink-0 rounded border ${
-                b.done ? 'border-emerald-500 bg-emerald-500' : 'border-neutral-700'
-              }`}
-              onClick={() => toggle.mutate(b)}
+              onClose={() => setSelectedId(null)}
             />
-            <span className={`flex-1 text-sm ${b.done ? 'text-neutral-600 line-through' : ''}`}>{b.title}</span>
-            <button
-              className="text-xs text-neutral-600 opacity-0 transition group-hover:opacity-100"
-              onClick={() => remove.mutate(b.id)}
-            >
-              삭제
-            </button>
-          </li>
-        ))}
-        {blocks.length === 0 && (
-          <li className="py-4 text-center text-xs text-neutral-600">시간 블록을 추가해보세요</li>
-        )}
-      </ul>
+          ) : (
+            <TodayCenter date={date} />
+          )}
+        </section>
+
+        <section
+          className="border-l border-line flex flex-col min-h-0 min-w-0"
+          style={{ width: rightW }}
+        >
+          <TodaySidebar
+            date={date}
+            events={events.events}
+            categories={eventCategories}
+            nowMin={nowMin}
+          />
+        </section>
+      </div>
     </div>
   );
 }

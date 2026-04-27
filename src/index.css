@@ -2,47 +2,88 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  color-scheme: dark;
-}
+@layer base {
+  :root {
+    color-scheme: light;
+    --c-bg: #ffffff;
+    --c-panel: #f7f7f5;
+    --c-line: #e7e7e4;
+    --c-ink: #1f1f1e;
+    --c-sub: #6b6b66;
+    --c-hover: #efeeec;
+    --c-accent: #2b2b2a;
+    --c-muted: #a8a8a3;
+  }
 
-html,
-body,
-#root {
-  height: 100%;
-}
+  html.dark {
+    color-scheme: dark;
+    --c-bg: #111111;
+    --c-panel: #1a1a18;
+    --c-line: #2a2a28;
+    --c-ink: #e7e7e4;
+    --c-sub: #8a8a85;
+    --c-hover: #222222;
+    --c-accent: #e7e7e4;
+    --c-muted: #5a5a56;
+  }
 
-body {
-  background: #0a0a0a;
-  color: #e5e5e5;
-  font-feature-settings: 'tnum';
-  -webkit-tap-highlight-color: transparent;
-}
+  html, body, #root {
+    height: 100%;
+  }
 
-input,
-textarea,
-button,
-select {
-  font: inherit;
-}
+  html {
+    font-size: 17px;
+  }
 
-@layer components {
-  .card {
-    @apply rounded-2xl border border-neutral-800 bg-neutral-900/60 p-4;
+  body {
+    margin: 0;
+    background: var(--c-bg);
+    color: var(--c-ink);
+    font-family: Inter, Pretendard, -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    font-size: 15px;
+    line-height: 22px;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
-  .btn {
-    @apply inline-flex items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors disabled:opacity-50;
+
+  *, *::before, *::after {
+    box-sizing: border-box;
+    border-radius: 0 !important;
   }
-  .btn-primary {
-    @apply btn bg-white text-black hover:bg-neutral-200;
+
+  button {
+    background: none;
+    border: 0 solid var(--c-line);
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+    padding: 0;
   }
-  .btn-ghost {
-    @apply btn text-neutral-300 hover:bg-neutral-800;
+
+  input, textarea, select {
+    font: inherit;
+    color: inherit;
+    background: transparent;
+    border: 1px solid var(--c-line);
+    padding: 4px 8px;
+    outline: none;
   }
-  .input {
-    @apply w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm outline-none placeholder:text-neutral-600 focus:border-neutral-600;
+
+  input:focus, textarea:focus, select:focus {
+    border-color: var(--c-ink);
   }
-  .chip {
-    @apply inline-flex items-center gap-1 rounded-full border border-neutral-800 bg-neutral-900 px-2.5 py-1 text-xs text-neutral-300;
+
+  /* 다크모드에서 네이티브 dropdown(option) 가독성 확보 — color-scheme이 OS에서 무시될 때를 대비한 명시적 폴백 */
+  html.dark select {
+    background-color: var(--c-bg);
+  }
+  html.dark select option {
+    background-color: var(--c-bg);
+    color: var(--c-ink);
+  }
+
+  ::selection {
+    background: var(--c-ink);
+    color: var(--c-bg);
   }
 }

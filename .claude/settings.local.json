@@ -1,10 +1,17 @@
 {
   "permissions": {
     "allow": [
-      "Bash(npm -v)",
+      "Bash(npx wrangler *)",
       "Bash(npx tsc *)",
-      "Bash(git add *)",
-      "Bash(git -c user.email=baly.hanchoi@gmail.com -c user.name=heyho88 commit -m ' *)"
+      "Bash(npm run *)",
+      "Bash(git check-ignore *)",
+      "Bash(nslookup self-managing-system.workers.dev)",
+      "Bash(nslookup heyho88.workers.dev)",
+      "Bash(curl -sS -o /dev/null -w \"8787: %{http_code} %{exitcode}\\\\n\" --max-time 3 http://127.0.0.1:8787/api/settings)",
+      "Bash(curl -sS -o /dev/null -w \"5173: %{http_code} %{exitcode}\\\\n\" --max-time 3 http://127.0.0.1:5173/)",
+      "Bash(awk NR>=1078 && NR<=1180 *)",
+      "Bash(tasklist)",
+      "PowerShell(Stop-Process *)"
     ]
   }
 }
